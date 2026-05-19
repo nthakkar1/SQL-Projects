@@ -1,0 +1,192 @@
+Problem Statement
+
+A dataset containing PAN (Permanent Account Number) values has been received from multiple sources and may contain data quality issues such as missing values, duplicates, inconsistent casing, leading/trailing spaces, invalid formats, and potentially generated or suspicious PAN numbers.
+
+The objective of this project is to perform data cleansing and validation on the PAN dataset and classify each PAN as Valid or Invalid based on predefined business rules.
+
+The solution should:
+
+Identify and handle missing data by detecting null or blank PAN values.
+Detect duplicate records and ensure only unique PAN numbers are considered for validation.
+Standardize PAN values by removing leading/trailing spaces and converting all characters to uppercase.
+Validate PAN structure according to the standard PAN format:
+First 5 characters must be alphabets (A–Z)
+Next 4 characters must be numeric digits (0–9)
+Last character must be an alphabet (A–Z)
+Identify suspicious PAN patterns by:
+Rejecting PANs containing adjacent repeated characters (e.g., AABCD1234F, ABCDE1123F)
+Rejecting PANs containing sequential alphabetic patterns (e.g., ABCDE1234F, LMNOP5678Q)
+Rejecting PANs containing sequential numeric patterns (e.g., AKTPR1234K, PQRSX5678M)
+Categorize each PAN as either:
+Valid PAN
+Invalid PAN
+Generate a summary report showing:
+Total records processed
+Total valid PANs
+Total invalid PANs
+Total missing or incomplete PAN records
+
+The final output should provide a cleansed and standardized PAN dataset along with a validation status for each PAN and an overall data quality summary.
+
+--------------------------------------------------------------------------------------
+
+Solution : 
+---------------------------------------------------------
+Function to Check Repitition Characters
+---------------------------------------------------------
+CREATE OR ALTER FUNCTION dbo.fn_check_adjacent_repetition
+(
+    @p_str VARCHAR(50)
+)
+RETURNS BIT
+AS
+BEGIN
+
+    DECLARE @i INT = 1;
+
+    WHILE @i < LEN(@p_str)
+    BEGIN
+        IF SUBSTRING(@p_str, @i, 1)
+           = SUBSTRING(@p_str, @i + 1, 1)
+            RETURN 1;
+
+        SET @i = @i + 1;
+    END
+
+    RETURN 0;
+
+END;
+GO
+
+
+---------------------------------------------------------
+Function to Check Sequential Characters
+-- Examples:
+--      ABCDE = 1
+--      LMNOP = 1
+--      XYZ   = 1
+--      ABCE  = 0
+---------------------------------------------------------
+CREATE OR ALTER FUNCTION dbo.fn_check_sequence
+(
+    @p_str VARCHAR(50)
+)
+RETURNS BIT
+AS
+BEGIN
+
+    DECLARE @i INT = 1;
+
+    WHILE @i < LEN(@p_str)
+    BEGIN
+
+        IF ASCII(SUBSTRING(@p_str, @i + 1, 1))
+           - ASCII(SUBSTRING(@p_str, @i, 1)) <> 1
+            RETURN 0;
+
+        SET @i = @i + 1;
+
+    END
+
+    RETURN 1;
+
+END;
+GO
+
+
+---------------------------------------------------------
+Create Valid / Invalid PAN View
+---------------------------------------------------------
+CREATE OR ALTER VIEW dbo.vw_valid_invalid_pans
+AS
+
+WITH cte_cleaned_pan AS
+(
+    SELECT DISTINCT
+           UPPER(LTRIM(RTRIM(pan_number))) AS pan_number
+    FROM dbo.stg_pan_numbers_dataset
+    WHERE pan_number IS NOT NULL
+      AND LTRIM(RTRIM(pan_number)) <> ''
+),
+cte_valid_pan AS
+(
+    SELECT *
+    FROM cte_cleaned_pan
+    WHERE dbo.fn_check_adjacent_repetition(pan_number) = 0
+
+      AND dbo.fn_check_sequence(
+                SUBSTRING(pan_number,1,5)
+          ) = 0
+
+      AND dbo.fn_check_sequence(
+                SUBSTRING(pan_number,6,4)
+          ) = 0
+
+      AND LEN(pan_number) = 10
+
+      AND pan_number LIKE
+          '[A-Z][A-Z][A-Z][A-Z][A-Z][0-9][0-9][0-9][0-9][A-Z]'
+)
+
+SELECT
+    cln.pan_number,
+    CASE
+        WHEN vld.pan_number IS NULL
+            THEN 'Invalid PAN'
+        ELSE 'Valid PAN'
+    END AS status
+FROM cte_cleaned_pan cln
+LEFT JOIN cte_valid_pan vld
+    ON cln.pan_number = vld.pan_number;
+GO
+
+
+---------------------------------------------------------
+View Valid / Invalid PANs
+---------------------------------------------------------
+SELECT *
+FROM dbo.vw_valid_invalid_pans
+ORDER BY pan_number;
+GO
+
+
+---------------------------------------------------------
+Summary Report
+---------------------------------------------------------
+WITH cte AS
+(
+    SELECT
+
+        (SELECT COUNT(*)
+         FROM dbo.stg_pan_numbers_dataset)
+            AS total_processed_records,
+
+        SUM(
+            CASE
+                WHEN status = 'Valid PAN'
+                    THEN 1
+                ELSE 0
+            END
+        ) AS total_valid_pans,
+
+        SUM(
+            CASE
+                WHEN status = 'Invalid PAN'
+                    THEN 1
+                ELSE 0
+            END
+        ) AS total_invalid_pans
+
+    FROM dbo.vw_valid_invalid_pans
+)
+
+SELECT
+    total_processed_records,
+    total_valid_pans,
+    total_invalid_pans,
+    total_processed_records -
+    (total_valid_pans + total_invalid_pans)
+        AS missing_incomplete_PANS
+FROM cte;
+GO
+
